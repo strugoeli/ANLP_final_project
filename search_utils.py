@@ -50,7 +50,7 @@ def compute_and_store_prototypes_centroids(ds, model,out_dir, representative_typ
         with open(os. path.join(embedding_path, "all_subcategories.pkl"), "rb") as f:
             all_subcategories = pickle.load(f)
 
-                # Convert lists to numpy arrays for efficient computations
+        # Convert lists to numpy arrays for efficient computations
         unique_clusters = np.unique(all_clusters)
 
     else:
