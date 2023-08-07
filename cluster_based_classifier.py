@@ -9,7 +9,8 @@ import faiss
 import numpy as np
 import torch
 from cuml.manifold import UMAP
-from cuml.cluster import HDBSCAN,approximate_predict
+from cuml.cluster import HDBSCAN,approximate_predict,KMeans
+from cuml.metrics import trustworthiness
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 import joblib
@@ -17,8 +18,20 @@ import os
 import json
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-UMAP_CONFIG = {'n_neighbors': 27, 'n_components': 2, 'metric': 'cosine'}
-HDBSCAN_CONFIG = {'min_cluster_size': 80, 'metric': 'euclidean', 'cluster_selection_method': 'eom'}
+# UMAP_CONFIG = {'n_neighbors': 27, 'n_components': 2, 'metric': 'cosine'}
+UMAP_CONFIG = {'n_neighbors': 27,
+                'n_components': 50,
+                'metric': 'euclidean',
+                'n_epochs': 1000,
+                'min_dist':0.0,
+                'spread':1.8,
+                'verbose':True,
+                'random_state':42}
+
+KMeans_CONFIG = {'n_clusters': 80,
+                 'max_iter': 300,
+                 'random_state': 42,
+                 'verbose':2}
 
 def normalize_emb_z_score(embeddings):
     emb_mean = np.mean(embeddings)
@@ -26,17 +39,17 @@ def normalize_emb_z_score(embeddings):
     return (embeddings - emb_mean) / emb_std
 
 class ClusterBasedClassifier:
-    def __init__(self, model, tokenizer,umap_model=None,cluster_predictor=None, umap_config=None, hdbscan_config=None):
+    def __init__(self, model, tokenizer, umap_model=None, cluster_predictor=None, umap_config=None, cluster_predictor_config=None):
         self.model = model.to(device)
         self.tokenizer = tokenizer
 
         if umap_config is None:
             umap_config = UMAP_CONFIG
-        if hdbscan_config is None:
-            hdbscan_config = HDBSCAN_CONFIG
+        if cluster_predictor_config is None:
+            cluster_predictor_config = KMeans_CONFIG
 
         self.umap_config = umap_config
-        self.hdbscan_config = hdbscan_config
+        self.cluster_predictor_config = cluster_predictor_config
         self.umap_model = umap_model
         self.cluster_predictor = cluster_predictor
 
@@ -155,53 +168,47 @@ class ClusterBasedClassifier:
         features = np.concatenate(features)
         return features
 
-    def run_clustering(self, embeddings, normalize=False):
+    def run_clustering(self, embeddings):
 
-        # normalized_embeddings = normalize(cp.array(embeddings))
-
-        if self.umap_model is None:
-            self.umap_model = UMAP(**self.umap_config,verbose=True).fit(embeddings)
-
-        umap_embeddings = self.umap_model.transform(embeddings)
-        
-        if self.cluster_predictor is None:
-            self.cluster_predictor = HDBSCAN(**self.hdbscan_config,prediction_data=True,verbose=True).fit(umap_embeddings)
-            
-        cluster_labels = self.cluster_predictor.labels_
-        return cluster_labels
+        normalized_embeddings = normalize(cp.array(embeddings))
+        self.umap_model = UMAP(**UMAP_CONFIG).fit(normalized_embeddings)
+        umap_embd = self.umap_model.transform(normalized_embeddings)
+        self.cluster_predictor = KMeans(**KMeans_CONFIG).fit(umap_embd)
+        clusters = self.cluster_predictor.labels_
+        return clusters.tolist()
 
     def predict_cluster(self, embeddings):
-        # normalized_embeddings = normalize (cp.array(embeddings))
+        normalized_embeddings = normalize(cp.array(embeddings))
+        umap_embd = self.umap_model.transform(normalized_embeddings)
+        cluster_labels = self.cluster_predictor.predict(umap_embd)
+        return cluster_labels.tolist()
 
-        if self.umap_model is not None:
-            umap_embeddings = self.umap_model.transform(embeddings)
-        else:
-            raise ValueError("UMAP model is not yet initialized. Run clustering first.")
-        
-        cluster_labels = approximate_predict(self.cluster_predictor, umap_embeddings)
-        return cluster_labels
 
-    # Added saving and loading methods for UMAP and HDBSCAN:
-
-    def save_umap_and_hdbscan_models(self, path: str):
+    def save_umap_and_cluster_predictor(self, path: str):
         os.makedirs(path, exist_ok=True)
-        self.save_umap_model(path + '/umap_model.joblib')
-        self.save_hdbscan_model(path + '/hdbscan_model.joblib')
-        # Save the UMAP and HDBSCAN configs as well
-        with open(path + '/umap_config.json', 'w') as f:
-            json.dump(self.umap_config, f)
-        with open(path + '/hdbscan_config.json', 'w') as f:
-            json.dump(self.hdbscan_config, f)
+        self.save_umap_model(path)
+        self.save_cluster_predictor_model(path)
 
     def save_umap_model(self, path: str):
-        joblib.dump(self.umap_model, path)
+        joblib.dump(self.umap_model, path + '/umap_model.joblib')
+        with open(path + '/umap_config.json', 'w') as f:
+            json.dump(self.umap_config, f)
 
-    def save_hdbscan_model(self, path: str):
-        joblib.dump(self.cluster_predictor, path)
+    def save_cluster_predictor_model(self, path: str):
+        joblib.dump(self.cluster_predictor, path + '/cluster_predictor_model.joblib')
+        with open(path + '/cluster_predictor_config.json', 'w') as f:
+            json.dump(self.cluster_predictor_config, f)
 
     def load_umap_model(self, path: str):
-        self.umap_model = joblib.load(path)
+        self.umap_model = joblib.load(path+'/umap_model.joblib')
+        return  self.umap_model
 
-    def load_hdbscan_model(self, path: str):
-        self.cluster_predictor = joblib.load(path)
+    def load_cluster_predictor_model(self, path: str):
+        self.cluster_predictor = joblib.load(path+'/cluster_predictor_model.joblib')
+
+        return self.cluster_predictor
+
+    def get_centroids(self):
+
+        return self.cluster_predictor.cluster_centers_
 

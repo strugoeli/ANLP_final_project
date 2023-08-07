@@ -23,16 +23,17 @@ from tqdm import tqdm
 # print(tokenized_dataset)
 
 #
-# def batch_embeddings(batch):
-#     with torch.no_grad():
-#         # Move the batch to the device
-#
-#         input_ids = batch['input_ids']
-#         attention_mask = batch['attention_mask']
-#         # Get the embeddings
-#         embeddings = encoder.base_model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0, :]
-#
-#         return {"embeddings": embeddings.detach().cpu().numpy()}
+def batch_embeddings(batch):
+    with torch.no_grad():
+        # Move the batch to the device
+
+        input_ids = batch['input_ids']
+        attention_mask = batch['attention_mask']
+        # Get the embeddings
+        embeddings = encoder.base_model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0, :]
+
+        return {"embeddings_pretrained": embeddings.detach().cpu().numpy()}
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def get_nearest_neighbors(batch):
     """Computes the nearest neighbors of a set of embeddings."""
@@ -67,12 +68,18 @@ if __name__ == '__main__':
     # Load the dataset
     dataset = datasets.load_dataset("data/reddit_categories_clean_embeddings",name="reddit_categories_clean_embeddings")
     # Fit the LabelEncoder on the 'category' column
-    subcategory_encoder = LabelEncoder()
+
+    dataset.set_format( type="torch", columns=["input_ids", "attention_mask"] ,device=device)
+    dataset = dataset.map(batch_embeddings, batched=True,batch_size=128, desc=' Computing embeddings')
+    dataset.reset_format()
+    dataset.save_to_disk("data/reddit_categories_clean_embeddings_with_pretrained",num_proc=6)
+
+
     category_encoder = LabelEncoder()
 
     category_encoder.fit(dataset['train']['category'])
     subcategory_encoder.fit(dataset['train']['subcategory'])
-
+    dataset.set_format( type="numpy", columns=["embeddings"])
     # dataset['train'].add_faiss_index('embeddings',device=0)
     ds_train = dataset['train']
     ds_val = dataset['validation']
@@ -84,8 +91,7 @@ if __name__ == '__main__':
     # Create the clustering object and run the clustering
     cluster_based_classifier = ClusterBasedClassifier(encoder, tokenizer)
     cluster_labels = cluster_based_classifier.run_clustering(val_embed)
-
-    cluster_based_classifier.save_umap_and_hdbscan_models('clustering_model')
+    cluster_based_classifier.save_umap_and_cluster_predictor('data/ds_val_clusters_info_kmeans')
     ds_val = ds_val.add_column('cluster', cluster_labels)
     ds_val_filtered = ds_val.filter(lambda example: example['cluster'] != -1)
 
@@ -106,12 +112,13 @@ if __name__ == '__main__':
         clusters_representatives.append(row)
 
     ds_train_clusters =datasets.Dataset.from_list(clusters_representatives)
-    ds_train_clusters.save_to_disk('data/ds_val_clusters_info2')
+    ds_train_clusters.save_to_disk('data/ds_val_clusters_info_kmeans')
+
 
     c=0
 
 
-
+    dataset.push_to_hub("reddit_categories_clean_embeddings_with_pretrained", private=True)
     #
     # tokenized_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "cluster"])
     # compute_and_store_prototypes_centroids(tokenized_dataset, encoder, out_dir='embeddings')
