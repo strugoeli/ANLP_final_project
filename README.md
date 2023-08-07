@@ -1,76 +1,51 @@
 
-# Reddit Data Preprocessing and Classification 
+---
 
-This repository contains scripts for preprocessing Reddit data, generating embeddings using a pre-trained transformer model with an adapter, and a Cluster-Based Classifier (CBC) for classification of the preprocessed and embedded data. 
+# Reddit Data Preprocessing, Embedding, and Zero-Shot Classification
+
+This repository is dedicated to scripts and models essential for preprocessing Reddit data, generating embeddings with a fine-tuned DistilBERT model equipped with an adapter, and subsequently classifying data into subcategories through a semantic search-based mechanism.
 
 ## Getting Started
 
-This project uses cuML, a suite of libraries for GPU-accelerated machine learning that's compatible with RAPIDS projects. It provides faster operations than traditional CPU-based methods.
-Installation details and complete info available in the official documentation. [https://docs.rapids.ai/install ]
-Please install cuML before running our code.
+The project is powered by cuML, a library collection crafted for GPU-accelerated machine learning, complementing RAPIDS projects. Its performance surpasses traditional CPU-driven methods. Ensure you've installed cuML before running the project's code.
 
-
-
-Please install the required dependencies listed in the `requirements.txt` file. Use the following command to install these dependencies:
-
+For other dependencies:
 ```sh
 pip install -r requirements.txt
 ```
 
 ## Reddit Data Preprocessing
 
-This script cleans and preprocesses Reddit self-posts. 
+This script has been tailored to clean and preprocess Reddit self-posts.
 
 ### Usage
-
-Run the script from the command line with optional arguments:
-
-- `--dataset_path`: Alternative dataset path. Default: `Elise-hf/reddit-self-post`.
-- `--output_dir`: Directory to save the cleaned dataset. Default: `output`.
-- `--output_name`: Name for the cleaned dataset. Default: `reddit_data_cleaned`.
-
-Example:
-```
+```python
 python preprocessing/download_and_clean_dataset.py --dataset_path your_dataset_path --output_dir your_output_dir --output_name your_dataset_name
 ```
 
-## Reddit Data Embedding
+## Reddit Data Embedding & Fine-tuning
 
-This script computes embeddings for Reddit self-posts using a pre-trained Transformer model and an adapter trained on the Reddit dataset.
+The `EDA_and_Training.ipynb` notebook delineates the fine-tuning process of a pretrained DistilBERT model, augmented with an adapter for the "category" label. Subsequent to this, the script computes embeddings for Reddit's self-posts.
 
 ### Usage
-
-Run the script from the command line with optional arguments:
-
-- `--adapter_path`: Path to the adapter weights. 
-- `--batch_size`: Batch size for computing embeddings.
-- `--num_proc`: Number of processes to use for saving embeddings. 
-- `--output_dir`: Directory to save embeddings. 
-- `--set_active`: Set the adapter as active. Default: `True`.
-- `--split`: Splits to use for creating embeddings. If none, all splits are used. Example: `--split train test`.
-
-Example:
-```
+```python
 python preprocessing/create_embeddings.py --adapter_path your_adapter_path --output_dir your_output_dir
 ```
 
-## Embedding Clusterer
+## Embedding Clusterer 
 
-This class applies dimensionality reduction and clustering on embeddings using UMAP and KMeans models. The embeddings are first normalized, then processed with UMAP for dimensionality reduction, and subsequently clustered using KMeans. The UMAP and KMeans models can be saved and loaded for future use.
+Post embedding, the data undergoes dimensionality reduction via UMAP and clustering with KMeans.
 
-## Usage
+### Usage
 
-To run the script, replace `your_embeddings` in the following example:
-
+Replace `your_embeddings`:
 ```python
-embeddings = your_embeddings  # Replace with your actual embeddings
+embeddings = your_embeddings  
 embedding_clusterer = EmbeddingClusterer()
 clusters = embedding_clusterer.run_clustering(embeddings)
 ```
 
-The `run_clustering` method runs the clustering on the embeddings and returns the cluster labels for each embedding. The `predict_cluster` method predicts the cluster labels for given embeddings based on the previously trained UMAP and KMeans model. 
-
-Model saving and loading can be performed with the following methods:
+For model persistence:
 
 ```python
 # Save models
@@ -81,30 +56,14 @@ embedding_clusterer.load_umap_model('path_to_models')
 embedding_clusterer.load_cluster_predictor_model('path_to_models')
 ```
 
-Replace `'path_to_save_models'` and `'path_to_models'` with your actual paths. 
+## Zero-Shot Classification with Semantic Search
 
-
-
-## Cluster-Based Classifier (CBC)
-
-This script trains a CBC on the `reddit_categories_clean_embeddings` dataset obtained from the Hugging Face datasets library. The CBC model uses a UMAP transformer for dimensionality reduction followed by clustering of the transformed data. 
+The main classification method is presented in `inference.py`. After tagging test points to clusters, a semantic search is employed to classify them into "subcategories." This search is confined to predicted clusters, with train set embeddings indexed for efficiency. Majority voting, influenced by the nearest train set neighbors, determines the subcategory for the test point.
 
 ### Usage
-
-To run the script, execute the following command:
-
 ```sh
 python inference.py --train_samples_ratio 0.25 --seed 42 --model_path "data/ds_val_clusters_info_kmeans_80"
 ```
 
-### Arguments
-
-The script accepts the following command-line arguments:
-
-- `train_samples_ratio`: Ratio of training samples to use. Default is 0.25.
-- `seed`: Seed for reproducibility. Default is 42.
-- `model_path`: Path to save/load the model. Default is "data/ds_val_clusters_info_kmeans_80".
-
-
-
+---
 
