@@ -1,19 +1,12 @@
-from transformers import AutoAdapterModel, AutoTokenizer
-import datasets
-from cluster_based_classifier import ClusterBasedClassifier
 import numpy as np
-from collections import Counter
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from tqdm import tqdm
-import gc
-import faiss
+from datasets import load_dataset
 import logging
-from collections import defaultdict
+from clusterer import EmbeddingClusterer
+from collections import  defaultdict, Counter
 import operator
-gc.collect()
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, classification_report, \
-    confusion_matrix
-
-ADAPTER_PATH = "Elise-hf/distilbert-base-uncased_reddit_categories_unipelft"
+import argparse
 
 def init_logger(log_name=None):
     # create logger with INFO level
@@ -38,24 +31,59 @@ def init_logger(log_name=None):
     return logger
 
 
+def get_pred(scores, examples, weighted=False):
+    """
+    Computes the predictions based on the highest scores or highest weighted scores.
 
-def get_pred(scores, examples , weighted=False):
-     if weighted:
-        votes = defaultdict(float)
+    Parameters:
+        scores (list): A list of scores associated with each instance in the examples.
+        examples (list): A list of examples each containing associated classes.
+        weighted (bool, optional): A boolean flag to decide if the majority voting should be weighted. Defaults to False.
+
+    Returns:
+        list: A list of predicted classes. If `weighted` is set to True, the function returns predictions
+              based on weighted majority voting, where weights are calculated as the inverse of the scores
+              (with a small offset added for stability). If `weighted` is set to False, the function returns
+              predictions based on simple majority voting.
+
+    Note:
+        The function uses `operator.itemgetter(1)` to resolve ties in max votes, hence the selection might be arbitrary
+        among classes with the same max votes. Consider using a tie-breaking rule for more consistent results.
+    """
+    if weighted:
+        scores = np.array(scores)
+        weighted_majority_preds = []
         weights = 1 / (scores + 1e-5)
         # Calculate weighted votes
         for weight, example in zip(weights, examples):
-         votes[example['subcategory']] += weight
-         # Determine predicted label
-        pred = max(votes.items(), key=operator.itemgetter(1))[0]
-        return pred
+            votes = defaultdict(float)
+            for w, label in zip(weight, example):
+                votes[label] += w
+            pred = max(votes.items(), key=operator.itemgetter(1))[0]
+            weighted_majority_preds.append(pred)
+        return weighted_majority_preds
 
-     preds_majority = [Counter(x).most_common(1)[0][0] for x in raw_preds]
-     return  preds_majority
+    preds_majority = [Counter(x).most_common(1)[0][0] for x in examples]
+    return preds_majority
 
 def get_cluster_recall_and_density(ds_train, ds_test):
+    """
+     This function computes the recall and density of each cluster with respect to subcategories.
+     The recall is the proportion of instances of a given subcategory that are assigned to the correct cluster.
+     The density is the proportion of instances in a cluster that belong to the most common subcategory.
 
-    # Convert to pandas dataframes
+     Parameters:
+     ds_train (Dataset): The training dataset.
+     ds_test (Dataset): The test dataset.
+
+     Returns:
+     df_test (Pandas DataFrame): A dataframe that includes columns indicating whether the true subcategory
+                                 is in the cluster's subcategories (hit),
+                                 frequency of each subcategory within each cluster (counts),
+                                 the size of each cluster (cluster_size),
+                                 and the proportion of each subcategory within its cluster (proportion).
+     """
+
     df_train = ds_train.select_columns(['category', 'cluster', 'subcategory']).to_pandas()
     df_test = ds_test.select_columns(['category', 'cluster', 'subcategory']).to_pandas()
 
@@ -79,77 +107,51 @@ def get_cluster_recall_and_density(ds_train, ds_test):
 
     return df_test
 
-
-
-if __name__ == '__main__':
-    logger = init_logger()
-
-    # Load the model and tokenizer
-    logger.info("Loading model and tokenizer")
-    encoder = AutoAdapterModel.from_pretrained("distilbert-base-uncased", cache_dir='model_weights')
-    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
-
-    # Load the adapter
-    adapter_name = encoder.load_adapter(ADAPTER_PATH, source="hf", set_active=True)
-
-    # Load the dataset
+def load_datasets():
     logger.info("Loading dataset")
-    dataset = datasets.load_dataset("data/reddit_categories_clean_embeddings",
-                                    name="reddit_categories_clean_embeddings")
-    num_sample = len(dataset['train']) // 4
-    ds_train = dataset['train'].shuffle(seed=42).select(range(num_sample))
-    # ds_val = dataset['validation']
-    ds_test = dataset['test']
+    dataset = load_dataset("Elise-hf/reddit_categories_clean_embeddings")
+    return dataset
 
-    logger.info("Adding faiss index")
-    logger.info("Setting format")
-    dataset.set_format(type='numpy', columns=['category', 'subcategory', 'embeddings'])
-    # val_embed = np.array(ds_val['embeddings'])
-    test_embed = np.array(ds_test['embeddings'])
-    train_embed = np.array(ds_train['embeddings'])
 
-    logger.info("Loading cluster based classifier")
-    cluster_based_classifier = ClusterBasedClassifier(encoder, tokenizer)
+def create_train_clusters(cluster_labels_train, ds_train):
+    """
+    This function creates a dictionary of train datasets, where each key is a unique cluster id
+    and the value is the corresponding subset of the train dataset associated with that cluster.
 
-    # cluster_predictor = cluster_based_classifier.load_cluster_predictor_model('data/ds_val_clusters_info_kmeans')
-    # umap_model = cluster_based_classifier.load_umap_model('data/ds_val_clusters_info_kmeans')
+    Parameters:
+    cluster_labels_train (array): The array of cluster labels for the training data.
+    ds_train (Dataset): The training dataset.
 
-    logger.info("Train cluster predictor model on train set")
-    cluster_labels_train = cluster_based_classifier.run_clustering(train_embed)
-    centroids = cluster_based_classifier.get_centroids()
-    #
-    # centroids_index = faiss.IndexFlatL2(centroids.shape[1])
-    # centroids_index.add(centroids.astype(np.float32))
-    # _, centroids_labels = centroids_index.search(test_embed.astype(np.float32), 2)
-
-    logger.info("Saving cluster predictor model and umap model")
-    cluster_based_classifier.save_umap_and_cluster_predictor("data/ds_val_clusters_info_kmeans_80")
-
-    logger.info("Predicting clusters for test set")
-    cluster_labels = cluster_based_classifier.predict_cluster(test_embed)
-
-    logger.info("Adding cluster column to train set and test set")
-    ds_test = ds_test.add_column('cluster', cluster_labels)
-    ds_train = ds_train.add_column('cluster', cluster_labels_train)
-
-    logger.info("Checking how many time the subcategory of the test set appears in each cluster predicted by the cluster predictor")
-    df_test = get_cluster_recall_and_density(ds_train,ds_test)
-
-    logger.info("Adding subcategory column to train set and test set")
+    Returns:
+    ds_train_per_cluster (dict): A dictionary with cluster ids as keys and corresponding datasets as values.
+    """
     ds_train_per_cluster = {}
     for cluster_id in np.unique(cluster_labels_train):
         index_cluster = np.where(cluster_labels_train == cluster_id)[0]
         current_ds = ds_train.select(index_cluster)
         current_ds.add_faiss_index('embeddings')
         ds_train_per_cluster[cluster_id] = current_ds
+    return ds_train_per_cluster
 
-    logger.info("Adding subcategory column to train set and test set")
+
+def get_class_scores_and_indices(ds_train_per_cluster,ds_test ):
+    """
+   This function processes the train and test datasets by assigning them into clusters,
+   computing the nearest neighbors and predicting the classes based on the clusters.
+
+   Parameters:
+   ds_train (Dataset): The training dataset.
+   ds_test (Dataset): The test dataset.
+
+   Returns:
+   predictions (numpy array): The array of predicted classes.
+   ground_truth (numpy array): The array of true classes.
+    """
+
     cluster_assignments = np.array(ds_test['cluster'])
     all_embeddings = np.array(ds_test['embeddings'])
     cluster_labels = np.array(ds_test['subcategory'])
 
-    # Get the class scores and indices for each cluster
-    logger.info("Getting class scores and indices for each cluster")
     correct_predictions = 0
     total_predictions = 0
     bz = 128
@@ -166,22 +168,80 @@ if __name__ == '__main__':
                                                                                            k=5)
             raw_preds = [x['subcategory'] for x in retrieved_examples]
             batch_current_labels = current_labels[i:i + bz]
-            current_preds =get_pred( examples=raw_preds, scores=class_scores, weighted=True)
+            current_preds = get_pred(examples=raw_preds, scores=class_scores, weighted=True)
             correct_predictions += np.sum(current_preds == batch_current_labels)
             total_predictions += len(current_preds)
             predictions.extend(current_preds)
             ground_truth.extend(batch_current_labels)
 
-
-
     predictions = np.array(predictions)
     ground_truth = np.array(ground_truth)
 
+    return predictions, ground_truth
+
+
+def evaluate_model(predictions, ground_truth):
+    """
+    This function evaluates the model by computing the accuracy, precision, recall and f1 score.
+    """
     logger.info("Accuracy: {}".format(accuracy_score(ground_truth, predictions)))
     logger.info("Precision: {}".format(precision_score(ground_truth, predictions, average='macro')))
     logger.info("Recall: {}".format(recall_score(ground_truth, predictions, average='macro')))
     logger.info("F1: {}".format(f1_score(ground_truth, predictions, average='macro')))
-    # logger.info("Classification report: {}".format(classification_report(ground_truth, predictions)))
-    # logger.info("Confusion matrix: {}".format(confusion_matrix(ground_truth, predictions)))
 
-# conda create --name anlp_r python=3.10
+
+def main():
+    # Load the dataset
+    dataset = load_datasets()
+
+    # Define Cluster Based Classifier
+    embedding_clusterer = EmbeddingClusterer()
+
+    # Format the dataset
+    ds_test = dataset['test'].rename_column('subcategory', 'labels')
+    ds_test.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
+
+    # Shuffle and select
+    num_sample = len(dataset['train']) * args.train_samples_ratio
+    ds_train = dataset['train'].shuffle(seed=args.seed).select(range(num_sample))
+    ds_test = dataset['test']
+
+    logger.info("Setting format")
+    dataset.set_format(type='numpy', columns=['category', 'subcategory', 'embeddings_pretrained'])
+    test_embed = np.array(ds_test['embeddings'])
+    train_embed = np.array(ds_train['embeddings'])
+
+    logger.info("Train cluster predictor model on train set")
+    cluster_labels_train = embedding_clusterer.run_clustering(train_embed)
+    # centroids = embedding_clusterer.get_centroids()
+
+    logger.info("Saving cluster predictor model and umap model")
+    embedding_clusterer.save_umap_and_cluster_predictor(args.model_path)
+
+    logger.info("Predicting clusters for test set")
+    cluster_labels = embedding_clusterer.predict_cluster(test_embed)
+
+    # Add cluster column
+    logger.info("Adding cluster column to train set and test set")
+    ds_test = ds_test.add_column('cluster', cluster_labels)
+    ds_train = ds_train.add_column('cluster', cluster_labels_train)
+    ds_train_per_cluster = create_train_clusters(cluster_labels_train, ds_train)
+
+    # Get class scores and indices
+    predictions, ground_truth = get_class_scores_and_indices(ds_test=ds_test, ds_train_per_cluster =ds_train_per_cluster)
+
+    # Evaluate model
+    evaluate_model(predictions, ground_truth)
+
+if __name__ == '__main__':
+    logger = init_logger()
+    # Argument parser
+    parser = argparse.ArgumentParser(description="Cluster-Based Classifier")
+    parser.add_argument("--train_samples_ratio", default=0.25, type=float, help="Ratio of training samples to use")
+    parser.add_argument("--seed", default=42, type=int, help="Seed for reproducibility")
+    parser.add_argument("--model_path", default="data/ds_val_clusters_info_kmeans_80", type=str,
+                        help="Path to save/load the model")
+
+    args = parser.parse_args()
+
+    main()
