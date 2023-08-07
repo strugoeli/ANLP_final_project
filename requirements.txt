@@ -1,0 +1,20 @@
+numpy
+torch
+transformers
+datasets
+sentence-transformers
+accelerate
+adapter-transformers
+textacy
+cuml-cu11 --extra-index-url https://pypi.nvidia.com
+tqdm
+joblib
+scipy
+faiss-cpu
+sklearn
+pandas
+seaborn
+matplotlib
+cupy-cuda110
+hyperopt
+bertopic
