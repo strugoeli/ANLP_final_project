@@ -1,8 +1,0 @@
-transformers
-datasets
-sentence-transformers
-accelerate
-textacy
-adapter-transformers
-torch
-pandas

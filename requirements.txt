@@ -6,7 +6,6 @@ sentence-transformers
 accelerate
 adapter-transformers
 textacy
-cuml-cu11 --extra-index-url https://pypi.nvidia.com
 tqdm
 joblib
 scipy
@@ -15,6 +14,4 @@ sklearn
 pandas
 seaborn
 matplotlib
-cupy-cuda110
-hyperopt
-bertopic
+
